@@ -3,8 +3,8 @@ name: 🧠 SOI Knowledge Pump
 on:
   push:
     paths:
-      - 'topics.txt'  # Runs AUTOMATICALLY when you edit/upload this file
-  workflow_dispatch:  # Allows MANUAL run button
+      - 'topics.txt'
+  workflow_dispatch:
 
 jobs:
   harvest_knowledge:
@@ -20,9 +20,9 @@ jobs:
         python-version: '3.11'
 
     - name: 📦 Install Dependencies
-      # Updated to use 'ddgs' to fix the RuntimeWarning
+      # ⚠️ FIX: Reverted 'ddgs' to 'duckduckgo-search' to match the python import
       run: |
-        pip install requests pypdf ddgs
+        pip install requests pypdf duckduckgo-search
 
     - name: 🔥 Run The Hunter
       run: python trainer.py
