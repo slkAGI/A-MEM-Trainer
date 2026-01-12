@@ -4,13 +4,13 @@ import random
 import time
 import io
 import sys
+import arxiv
+import wikipedia
 from pypdf import PdfReader
-from duckduckgo_search import DDGS
 
 # CONFIG
 SOI_BACKEND_URL = "https://slk-soi-1000.stanleyisaac134.workers.dev/api/learning/absorb"
 TOPICS_FILE = "topics.txt"
-PDFS_PER_TOPIC = 25
 MAX_TEXT_CHUNK = 50000 
 
 def get_all_topics():
@@ -21,72 +21,13 @@ def get_all_topics():
         print("❌ Error: topics.txt not found!")
         sys.exit(1)
 
-def search_pdfs(topic, limit=50):
-    print(f"🔍 Hunting PDFs for: {topic}...")
-    pdf_links = []
-    
-    # Strategy: Loose Search + Client-Side Filter
-    # We ask for "topic pdf" instead of "filetype:pdf" to avoid bot detection
-    queries = [f"{topic} pdf", f"{topic} documentation pdf", f"{topic} whitepaper pdf"]
-    
-    try:
-        with DDGS() as ddgs:
-            for query in queries:
-                print(f"   👉 Trying Query: '{query}'")
-                # Request MORE results (100) so we can filter them ourselves
-                results = ddgs.text(query, max_results=100)
-                
-                for r in results:
-                    url = r.get('href', '')
-                    # MANUAL FILTER: We check the extension ourselves
-                    if url.lower().endswith('.pdf'):
-                        if url not in pdf_links:
-                            pdf_links.append(url)
-                            
-                if len(pdf_links) >= limit:
-                    break
-                    
-    except Exception as e:
-        print(f"   ⚠️ Search error: {e}")
-
-    print(f"✅ Found {len(pdf_links)} unique PDFs.")
-    return pdf_links[:limit]
-
-def extract_text_from_pdf_url(url):
-    try:
-        print(f"⬇️ Downloading: {url}")
-        # Fake User-Agent to look like a Browser, not a Bot
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/pdf'
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return None
-        
-        f = io.BytesIO(response.content)
-        reader = PdfReader(f)
-        text = ""
-        # Cap at 30 pages to prevent memory crash
-        for i, page in enumerate(reader.pages):
-            if i > 30: break 
-            extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        
-        return text
-    except Exception as e:
-        # Suppress massive error logs
-        return None
-
-def feed_soi(topic, text):
+def feed_soi(topic, text, source_type):
     chunks = [text[i:i+MAX_TEXT_CHUNK] for i in range(0, len(text), MAX_TEXT_CHUNK)]
     success_count = 0
     
     for i, chunk in enumerate(chunks):
         payload = {
-            "title": f"Auto-Harvest: {topic}",
+            "title": f"Auto-Harvest: {topic} ({source_type})",
             "content": chunk
         }
         try:
@@ -94,41 +35,99 @@ def feed_soi(topic, text):
             if r.status_code == 200:
                 success_count += 1
                 print(f"   🧠 Chunk {i+1}/{len(chunks)} digested.")
+            else:
+                print(f"   ❌ SOI Rejected Chunk {i+1}: {r.status_code}")
         except Exception as e:
             print(f"   ❌ Network Error feeding SOI: {e}")
             
     return success_count
 
+# --- STRATEGY 1: ARXIV (Scientific Papers) ---
+def hunt_arxiv(topic):
+    print(f"🔬 Searching ArXiv for: {topic}...")
+    client = arxiv.Client()
+    search = arxiv.Search(
+        query = topic,
+        max_results = 100,
+        sort_by = arxiv.SortCriterion.Relevance
+    )
+
+    results = []
+    try:
+        for r in client.results(search):
+            print(f"   📄 Found Paper: {r.title}")
+            # Download PDF to memory
+            pdf_data = requests.get(r.pdf_url).content
+            
+            # Extract Text
+            f = io.BytesIO(pdf_data)
+            reader = PdfReader(f)
+            text = ""
+            for page in reader.pages[:30]: # Limit to first 30 pages
+                extracted = page.extract_text()
+                if extracted: text += extracted + "\n"
+            
+            if len(text) > 1000:
+                print(f"   ⬇️ Extracted {len(text)} chars. Feeding...")
+                feed_soi(topic, text, "ArXiv Paper")
+                results.append(r.title)
+                
+            time.sleep(1) # Be polite
+    except Exception as e:
+        print(f"   ⚠️ ArXiv Error: {e}")
+
+    return len(results)
+
+# --- STRATEGY 2: WIKIPEDIA (General Knowledge) ---
+def hunt_wikipedia(topic):
+    print(f"📚 Searching Wikipedia for: {topic}...")
+    try:
+        # Get the page
+        page = wikipedia.page(topic, auto_suggest=True)
+        print(f"   📖 Found Page: {page.title}")
+        
+        content = page.content
+        if len(content) > 1000:
+            print(f"   ⬇️ Extracted {len(content)} chars. Feeding...")
+            feed_soi(topic, content, "Wikipedia")
+            return 1
+    except wikipedia.exceptions.DisambiguationError as e:
+        # If ambiguous, pick the first option
+        try:
+            first_option = e.options[0]
+            print(f"   twisted path -> {first_option}")
+            hunt_wikipedia(first_option)
+            return 1
+        except:
+            return 0
+    except Exception as e:
+        print(f"   ⚠️ Wikipedia Error: {e}")
+    
+    return 0
+
 def main():
     topics = get_all_topics()
     
-    # Retry Loop (3 Attempts)
+    # Try up to 3 topics if one fails
     for attempt in range(3):
         target_topic = random.choice(topics)
         print(f"\n🎯 MISSION TARGET (Attempt {attempt+1}/3): {target_topic}")
         
-        pdf_urls = search_pdfs(target_topic)
+        # 1. Try ArXiv (Best for your technical list)
+        success_count = hunt_arxiv(target_topic)
         
-        if not pdf_urls:
-            print("❌ No PDFs found. Retrying new topic...")
-            continue
-            
-        processed = 0
-        for url in pdf_urls:
-            text = extract_text_from_pdf_url(url)
-            if text and len(text) > 1000: # Ignore tiny PDFs
-                print(f"   📄 Extracted {len(text)} chars. Feeding Brain...")
-                if feed_soi(target_topic, text) > 0:
-                    processed += 1
-                time.sleep(1) # Be polite
-            
-            if processed >= 5: # Limit to 5 PDFs per run to be safe
-                print("🏁 Batch Complete.")
-                sys.exit(0)
-        
-        if processed > 0:
+        if success_count > 0:
+            print(f"✅ SUCCESSFULLY FED SOI with {success_count} papers on {target_topic}")
             sys.exit(0)
             
+        # 2. If ArXiv empty, Try Wikipedia (Best for general concepts)
+        print("   ⚠️ ArXiv yielded nothing. Switching to Wikipedia...")
+        if hunt_wikipedia(target_topic) > 0:
+            print(f"✅ SUCCESSFULLY FED SOI with Wikipedia entry for {target_topic}")
+            sys.exit(0)
+            
+        print("❌ Both sources failed. Picking new topic...")
+
     print("💀 Failed to feed SOI after 3 attempts.")
     sys.exit(1)
 

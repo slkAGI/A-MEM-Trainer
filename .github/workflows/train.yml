@@ -20,9 +20,8 @@ jobs:
         python-version: '3.11'
 
     - name: 📦 Install Dependencies
-      # ⚠️ FIX: Reverted 'ddgs' to 'duckduckgo-search' to match the python import
       run: |
-        pip install requests pypdf duckduckgo-search
+        pip install requests pypdf arxiv wikipedia
 
     - name: 🔥 Run The Hunter
       run: python trainer.py
