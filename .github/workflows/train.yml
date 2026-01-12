@@ -1,0 +1,33 @@
+name: 🧠 SOI Knowledge Pump
+
+on:
+  push:
+    paths:
+      - 'topics.txt'  # Runs AUTOMATICALLY when you edit/upload this file
+  workflow_dispatch:  # Allows MANUAL run button
+
+jobs:
+  harvest_knowledge:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v3
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: 📦 Install Dependencies
+      # Updated to use 'ddgs' to fix the RuntimeWarning
+      run: |
+        pip install requests pypdf ddgs
+
+    - name: 🔥 Run The Hunter
+      run: python trainer.py
+      
+    - name: 📊 Report Status
+      if: always()
+      run: |
+        echo "✅ Knowledge Pump cycle completed"
